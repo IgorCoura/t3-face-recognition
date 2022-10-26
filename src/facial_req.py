@@ -8,23 +8,62 @@ import imutils
 import pickle
 import time
 import cv2
+import requests
+import RPi.GPIO as GPIO
+import time
+import base64
+import unidots as unidots
 
 #Initialize 'currentname' to trigger only when a new person is identified.
 currentname = "unknown"
 #Determine faces from encodings.pickle file model created from train_model.py
 encodingsP = "encodings.pickle"
+#use this xml file
+cascade = "haarcascade_frontalface_default.xml"
+
+nameReq = "IGOR"
+
+countReq = 0
+
+#Setup lep
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
+
+Led_Verde = 23
+Led_Vermelho = 16
+
+GPIO.setup(Led_Verde, GPIO.OUT)
+GPIO.setup(Led_Vermelho, GPIO.OUT)
+
+GPIO.output(Led_Verde, False)
+GPIO.output(Led_Vermelho, True)
+
+#function for setting up emails
+def send_message(name):
+    with open("image.jpg", "rb") as image_file:
+        encoded_string = base64.b64encode(image_file.read())
+        unidots.send_image(name, encoded_string.decode('utf-8'))
+        print(encoded_string)
+
+
+def changeLed():
+    print("Req") 
+    GPIO.output(Led_Verde, True)
+    GPIO.output(Led_Vermelho, False)
+    time.sleep(5)
+    GPIO.output(Led_Verde, False)
+    GPIO.output(Led_Vermelho, True)
 
 # load the known faces and embeddings along with OpenCV's Haar
 # cascade for face detection
 print("[INFO] loading encodings + face detector...")
 data = pickle.loads(open(encodingsP, "rb").read())
+detector = cv2.CascadeClassifier(cascade)
 
 # initialize the video stream and allow the camera sensor to warm up
-# Set the ser to the followng
-# src = 0 : for the build in single web cam, could be your laptop webcam
-# src = 2 : I had to set it to 2 inorder to use the USB webcam attached to my laptop
-vs = VideoStream(src=2,framerate=10).start()
-#vs = VideoStream(usePiCamera=True).start()
+print("[INFO] starting video stream...")
+vs = VideoStream(src=0).start()
+# vs = VideoStream(usePiCamera=True).start()
 time.sleep(2.0)
 
 # start the FPS counter
@@ -36,10 +75,24 @@ while True:
 	# to 500px (to speedup processing)
 	frame = vs.read()
 	frame = imutils.resize(frame, width=500)
-	# Detect the fce boxes
-	boxes = face_recognition.face_locations(frame)
+	
+	# convert the input frame from (1) BGR to grayscale (for face
+	# detection) and (2) from BGR to RGB (for face recognition)
+	gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+	rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+	# detect faces in the grayscale frame
+	rects = detector.detectMultiScale(gray, scaleFactor=1.1, 
+		minNeighbors=5, minSize=(30, 30),
+		flags=cv2.CASCADE_SCALE_IMAGE)
+
+	# OpenCV returns bounding box coordinates in (x, y, w, h) order
+	# but we need them in (top, right, bottom, left) order, so we
+	# need to do a bit of reordering
+	boxes = [(y, x + w, y + h, x) for (x, y, w, h) in rects]
+
 	# compute the facial embeddings for each face bounding box
-	encodings = face_recognition.face_encodings(frame, boxes)
+	encodings = face_recognition.face_encodings(rgb, boxes)
 	names = []
 
 	# loop over the facial embeddings
@@ -48,7 +101,7 @@ while True:
 		# encodings
 		matches = face_recognition.compare_faces(data["encodings"],
 			encoding)
-		name = "Unknown" #if face is not recognized, then print Unknown
+		name = "Unknown"
 
 		# check to see if we have found a match
 		if True in matches:
@@ -68,12 +121,34 @@ while True:
 			# of votes (note: in the event of an unlikely tie Python
 			# will select first entry in the dictionary)
 			name = max(counts, key=counts.get)
-
+			
+			if(name == nameReq):
+					print(f"I: ${countReq}")
+					countReq += 1
+					time.sleep(0.1)
+					if(countReq >= 5):
+						countReq =0
+						changeLed()
+			else:
+				countReq =0
+			
 			#If someone in your dataset is identified, print their name on the screen
-			if currentname != name:
+			if currentname != name:                
 				currentname = name
 				print(currentname)
-
+				
+				
+				
+				#Take a picture to send in the email
+				img_name = "image.jpg"
+				cv2.imwrite(img_name, frame)
+				print('Taking a picture.')
+				
+				#Now send me an email to let me know who is at the door
+				#request = send_message(name)
+				#print ('Status Code: '+format(request.status_code)) #200 status code means email sent successfully
+				send_message(name)
+				
 		# update the list of names
 		names.append(name)
 
@@ -90,7 +165,7 @@ while True:
 	cv2.imshow("Facial Recognition is Running", frame)
 	key = cv2.waitKey(1) & 0xFF
 
-	# quit when 'q' key is pressed
+	# if the `q` key was pressed, break from the loop
 	if key == ord("q"):
 		break
 
